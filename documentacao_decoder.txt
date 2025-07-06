@@ -1,0 +1,522 @@
+DOCUMENTAÇÃO COMPLETA DO SIMULADOR RISC-V
+==========================================
+
+VISÃO GERAL:
+============
+Este projeto implementa um simulador completo do processador RISC-V RV32I com suporte a pipeline de 5 estágios.
+O simulador inclui assembler, decoder, processador, memória e testes.
+
+=====================================
+DECODER.PY
+=====================================
+
+Decoder:
+========
+
+O decoder é responsável por converter instruções binárias de 32 bits em uma representação estruturada que o processador pode executar.
+
+Classe Instrucao:
+================
+
+    def __init__(self, palavra):
+        Esta função pega a instrução com 32 bits e extrai os 7 bits menos significativos (opcode).
+        O opcode é obtido através da operação: self.opcode = palavra & 0x7F
+        Depois a função _determinar_tipo() retorna o tipo da instrução baseado no opcode.
+        No final chama a função _decodificar() para extrair todos os campos da instrução.
+
+    def _determinar_tipo(self):
+        Pega a instrução e verifica qual tipo ela pertence: R, I, S, B, U, J.
+        Usa o opcode para determinar o tipo:
+        - R-type (0b0110011): Operações entre registradores (ADD, SUB, AND, OR, etc.)
+        - I-type (0b0010011, 0b0000011, 0b1100111): Operações com imediato, loads, JALR
+        - S-type (0b0100011): Stores (SW, SH, SB)
+        - B-type (0b1100011): Branches condicionais (BEQ, BNE, BLT, etc.)
+        - U-type (0b0110111, 0b0010111): Operações com imediato grande (LUI, AUIPC)
+        - J-type (0b1101111): Jumps (JAL)
+        Exemplo: if self.opcode == 0b0110011: return 'R'
+        Retorna o tipo como string.
+
+    def _decodificar(self):
+        Verifica o tipo da instrução através de if/elif.
+        A partir da determinação, separa a palavra inteira em partes de acordo com o tipo da instrução.
+        
+        Para cada tipo, extrai campos específicos usando operações bit a bit:
+        
+        Tipo R (Registrador-Registrador):
+        - rd: registrador destino (bits 11-7)
+        - funct3: função específica (bits 14-12)
+        - rs1: registrador fonte 1 (bits 19-15)
+        - rs2: registrador fonte 2 (bits 24-20)
+        - funct7: função estendida (bits 31-25)
+        
+        Tipo I (Imediato):
+        - rd: registrador destino (bits 11-7)
+        - funct3: função específica (bits 14-12)
+        - rs1: registrador fonte (bits 19-15)
+        - imm: valor imediato de 12 bits (bits 31-20)
+        
+        Tipo S (Store):
+        - funct3: função específica (bits 14-12)
+        - rs1: registrador base (bits 19-15)
+        - rs2: registrador fonte (bits 24-20)
+        - imm: valor imediato fragmentado (bits 31-25 e 11-7)
+        
+        Tipo B (Branch):
+        - funct3: função específica (bits 14-12)
+        - rs1: registrador 1 (bits 19-15)
+        - rs2: registrador 2 (bits 24-20)
+        - imm: offset de branch fragmentado e reorganizado
+        
+        Tipo U (Upper Immediate):
+        - rd: registrador destino (bits 11-7)
+        - imm: valor imediato de 20 bits superiores (bits 31-12)
+        
+        Tipo J (Jump):
+        - rd: registrador destino (bits 11-7)
+        - imm: offset de jump fragmentado e reorganizado
+
+    def _sinal_extendido(self, valor, bits):
+        Converte valores com N bits para 32 bits preservando o sinal.
+        Verifica se o bit mais significativo (bit de sinal) está setado.
+        Se estiver, preenche os bits restantes com 1s (número negativo).
+        Se não estiver, mantém os bits restantes como 0s (número positivo).
+        Exemplo: um valor de 12 bits com sinal é estendido para 32 bits.
+
+    def obter_nome_instrucao(self):
+        Usa o opcode, funct3 e funct7 para identificar exatamente qual instrução é.
+        Retorna o nome dela como string.
+        
+        O processo de identificação segue uma hierarquia:
+        1. Primeiro verifica o tipo da instrução
+        2. Depois usa funct3 para refinar a identificação
+        3. Para alguns casos, usa funct7 para distinção final
+        
+        Exemplos:
+        - Tipo R com funct3=000: pode ser ADD (funct7=0000000) ou SUB (funct7=0100000)
+        - Tipo I com opcode=0010011 e funct3=000: ADDI
+        - Tipo B com funct3=000: BEQ
+        - Tipo U com opcode=0110111: LUI
+
+Classe DecodificadorRISCV:
+=========================
+
+    def __init__(self):
+        Construtor simples que inicializa o decodificador.
+
+    def decodificar(self, palavra_instrucao):
+        Método principal que recebe uma palavra de instrução de 32 bits.
+        Cria e retorna uma instância da classe Instrucao com a instrução decodificada.
+
+    def e_valida(self, instrucao):
+        Verifica se a instrução decodificada é válida.
+        Retorna True se o nome da instrução não for "UNKNOWN".
+
+TIPOS DE INSTRUÇÃO SUPORTADOS:
+==============================
+
+R-type: ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA, OR, AND
+I-type: ADDI, SLTI, SLTIU, XORI, ORI, ANDI, SLLI, SRLI, SRAI, LB, LH, LW, LBU, LHU, JALR
+S-type: SB, SH, SW
+B-type: BEQ, BNE, BLT, BGE, BLTU, BGEU
+U-type: LUI, AUIPC
+J-type: JAL
+
+EXEMPLO DE USO:
+==============
+
+decoder = DecodificadorRISCV()
+instrucao = decoder.decodificar(0x02a00093)  # addi x1, x0, 42
+nome = instrucao.obter_nome_instrucao()      # "ADDI"
+rd = instrucao.rd                            # 1
+rs1 = instrucao.rs1                          # 0
+imm = instrucao.imm                          # 42
+
+=====================================
+ASSEMBLER.PY
+=====================================
+
+Assembler:
+==========
+
+O assembler converte código assembly RISC-V em instruções de máquina de 32 bits.
+
+Classe RISCVAssembler:
+=====================
+
+    def __init__(self):
+        Inicializa o assembler com:
+        - Mapeamento de registradores (x0-x31, zero, ra, sp, etc.)
+        - Dicionário de labels para saltos
+        - Opcodes das instruções suportadas
+        - Pseudo-instruções (nop, li, mv, etc.)
+
+    def _parsear_registrador(self, reg_str):
+        Converte string de registrador para número.
+        Aceita tanto nomes simbólicos (zero, ra, sp) quanto numéricos (x0, x1).
+        Retorna o número do registrador (0-31).
+
+    def _parsear_imediato(self, imm_str, endereco_atual=0):
+        Converte string de imediato para número.
+        Suporta:
+        - Hexadecimal (0x1234)
+        - Binário (0b1010)
+        - Decimal (42)
+        - Labels (para cálculo de offsets)
+
+    def _gerar_tipo_r(self, opcode, funct3, funct7, rd, rs1, rs2):
+        Gera instrução tipo R combinando todos os campos.
+        Formato: funct7|rs2|rs1|funct3|rd|opcode
+
+    def _gerar_tipo_i(self, opcode, funct3, rd, rs1, imm):
+        Gera instrução tipo I.
+        Formato: imm[11:0]|rs1|funct3|rd|opcode
+
+    def _gerar_tipo_s(self, opcode, funct3, rs1, rs2, imm):
+        Gera instrução tipo S com imediato fragmentado.
+        Formato: imm[11:5]|rs2|rs1|funct3|imm[4:0]|opcode
+
+    def _gerar_tipo_b(self, opcode, funct3, rs1, rs2, imm):
+        Gera instrução tipo B com imediato reorganizado.
+        Formato: imm[12|10:5]|rs2|rs1|funct3|imm[4:1|11]|opcode
+
+    def _gerar_tipo_u(self, opcode, rd, imm):
+        Gera instrução tipo U.
+        Formato: imm[31:12]|rd|opcode
+
+    def _gerar_tipo_j(self, opcode, rd, imm):
+        Gera instrução tipo J com imediato reorganizado.
+        Formato: imm[20|10:1|11|19:12]|rd|opcode
+
+    def _primeira_passada(self, linhas):
+        Primeira passada do assembler: encontra todos os labels.
+        Percorre o código calculando endereços de cada label.
+
+    def _segunda_passada(self, linhas):
+        Segunda passada: gera o código de máquina.
+        Converte cada linha assembly em instrução de 32 bits.
+
+    def _parsear_instrucao(self, linha, endereco):
+        Parseia uma linha de instrução individual.
+        Separa tokens, identifica tipo e gera código correspondente.
+
+    def _expandir_pseudo_instrucao(self, nome_instr, tokens, endereco):
+        Expande pseudo-instruções em instruções reais.
+        Exemplo: nop vira addi x0, x0, 0
+
+    def assemblar(self, codigo_assembly):
+        Método principal que recebe código assembly como string.
+        Executa duas passadas e retorna lista de instruções de 32 bits.
+
+=====================================
+MEMORY.PY
+=====================================
+
+Memoria:
+========
+
+Implementa o sistema de memória do simulador com suporte a diferentes tamanhos de acesso.
+
+Classe Memoria:
+==============
+
+    def __init__(self, tamanho=1024*1024):
+        Inicializa a memória com tamanho especificado (padrão 1MB).
+        Cria um bytearray para armazenar os dados.
+
+    def ler_byte(self, endereco):
+        Lê um byte (8 bits) da memória no endereço especificado.
+        Verifica limites de memória.
+        Retorna valor entre 0-255.
+
+    def escrever_byte(self, endereco, valor):
+        Escreve um byte na memória.
+        Verifica limites e aplica máscara de 8 bits.
+
+    def ler_halfword(self, endereco):
+        Lê uma halfword (16 bits) da memória.
+        Verifica alinhamento (endereço deve ser múltiplo de 2).
+        Combina 2 bytes em little-endian.
+
+    def escrever_halfword(self, endereco, valor):
+        Escreve uma halfword na memória.
+        Verifica alinhamento e divide em 2 bytes.
+
+    def ler_word(self, endereco):
+        Lê uma word (32 bits) da memória.
+        Verifica alinhamento (endereço deve ser múltiplo de 4).
+        Combina 4 bytes em little-endian.
+
+    def escrever_word(self, endereco, valor):
+        Escreve uma word na memória.
+        Verifica alinhamento e divide em 4 bytes.
+
+    def carregar_dados(self, endereco_inicial, dados):
+        Carrega dados binários na memória a partir de um endereço.
+        Usado para carregar programas compilados.
+
+    def limpar(self):
+        Limpa toda a memória, zerando todos os bytes.
+
+    def dump(self, endereco_inicial=0, tamanho=256):
+        Faz dump hexadecimal de uma região da memória para debug.
+        Retorna string formatada mostrando bytes em hex e ASCII.
+
+=====================================
+PROCESSOR.PY
+=====================================
+
+Processador:
+============
+
+Implementa o processador RISC-V RV32I básico (sem pipeline).
+
+Classe RISCVProcessor:
+=====================
+
+    def __init__(self, debug=False):
+        Inicializa o processador com:
+        - 32 registradores (x0 sempre zero)
+        - Program Counter (PC)
+        - Instância de memória
+        - Decodificador de instruções
+        - Flags de debug e estado
+
+    def reset(self):
+        Reinicia o processador para estado inicial.
+        Zera registradores, PC, memória e contadores.
+
+    def carregar_programa(self, instrucoes):
+        Carrega programa (lista de instruções de 32 bits) na memória.
+        Coloca instruções sequencialmente a partir do endereço 0.
+
+    def carregar_binario(self, dados):
+        Carrega dados binários diretamente na memória.
+
+    def ler_registrador(self, num_reg):
+        Lê valor de um registrador.
+        x0 sempre retorna 0, outros registradores retornam valor armazenado.
+
+    def escrever_registrador(self, num_reg, valor):
+        Escreve valor em um registrador.
+        x0 sempre permanece 0, outros registradores são atualizados.
+
+    def buscar_instrucao(self):
+        Busca próxima instrução da memória usando PC atual.
+        Retorna palavra de 32 bits.
+
+    def executar_instrucao(self, instrucao):
+        Executa uma instrução decodificada.
+        Implementa todas as instruções RV32I:
+        - Aritméticas: ADD, SUB, ADDI
+        - Lógicas: AND, OR, XOR, ANDI, ORI, XORI
+        - Shifts: SLL, SRL, SRA, SLLI, SRLI, SRAI
+        - Comparações: SLT, SLTU, SLTI, SLTIU
+        - Memória: LW, LH, LB, LHU, LBU, SW, SH, SB
+        - Controle: BEQ, BNE, BLT, BGE, BLTU, BGEU, JAL, JALR
+        - Imediatos: LUI, AUIPC
+
+    def _sinal_extendido_32(self, valor):
+        Converte valor de 32 bits para inteiro com sinal.
+        Trata números negativos em complemento de 2.
+
+    def executar(self):
+        Executa programa completo até parar.
+        Loop principal que busca, decodifica e executa instruções.
+
+    def executar_passo_a_passo(self):
+        Executa programa passo a passo para debug.
+        Permite inspeção do estado após cada instrução.
+
+    def _imprimir_registradores_alterados(self):
+        Imprime apenas registradores que foram modificados (não-zero).
+
+    def imprimir_estado(self):
+        Imprime estado completo do processador:
+        - Valor do PC
+        - Número de ciclos executados
+        - Valores dos registradores
+        - Conteúdo da memória
+
+=====================================
+PROCESSOR_PIPELINE.PY
+=====================================
+
+Processador Pipeline:
+====================
+
+Implementa processador RISC-V com pipeline de 5 estágios (IF, ID, EX, MEM, WB).
+
+Classe PipelineRegister:
+=======================
+
+    def __init__(self):
+        Registrador entre estágios do pipeline.
+        Armazena: PC, instrução, registradores, imediatos, resultados, sinais de controle.
+
+Classe RISCVPipelineProcessor:
+=============================
+
+    def __init__(self, debug=False):
+        Inicializa processador com pipeline.
+        Cria registradores de pipeline (IF/ID, ID/EX, EX/MEM, MEM/WB).
+        Inicializa contadores e controle de hazards.
+
+    def reset(self):
+        Reinicia processador e limpa todos os registradores de pipeline.
+
+    def detectar_hazards(self):
+        Detecta hazards de dados RAW (Read After Write).
+        Verifica dependências entre instruções no pipeline.
+
+    def forwarding(self, reg_num, estagio):
+        Implementa forwarding para resolver hazards.
+        Encaminha dados de estágios posteriores para anteriores.
+
+    def estagio_if(self):
+        Estágio Instruction Fetch:
+        Busca instrução da memória usando PC.
+        Incrementa PC para próxima instrução.
+
+    def estagio_id(self):
+        Estágio Instruction Decode:
+        Decodifica instrução e lê registradores.
+        Gera sinais de controle.
+
+    def gerar_sinais_controle(self, nome_instrucao):
+        Gera sinais de controle baseado no tipo de instrução:
+        - reg_write: se escreve em registrador
+        - mem_read/write: se acessa memória
+        - branch/jump: se altera fluxo de controle
+
+    def estagio_ex(self):
+        Estágio Execute:
+        Executa operação na ALU.
+        Calcula endereços de memória.
+        Avalia condições de branch.
+
+    def calcular_alu(self, nome, rs1_val, rs2_val, imm, pc):
+        Implementa todas as operações da ALU.
+        Retorna resultado da operação aritmética/lógica.
+
+    def verificar_branch(self, nome, rs1_val, rs2_val):
+        Verifica se condição de branch é satisfeita.
+        Retorna True se branch deve ser tomado.
+
+    def estagio_mem(self):
+        Estágio Memory:
+        Executa operações de load/store.
+        Passa resultados para próximo estágio.
+
+    def estagio_wb(self):
+        Estágio Write Back:
+        Escreve resultado final no registrador destino.
+
+    def executar_com_pipeline(self):
+        Loop principal de execução com pipeline.
+        Executa todos os 5 estágios a cada ciclo.
+        Gera arquivo de saída com estado do pipeline.
+
+    def carregar_arquivo_asm(self, nome_arquivo):
+        Carrega e assembla arquivo .asm.
+        Usa assembler integrado para converter para código de máquina.
+
+    def carregar_arquivo_bin(self, nome_arquivo):
+        Carrega arquivo binário diretamente na memória.
+
+=====================================
+MAIN.PY
+=====================================
+
+Main:
+=====
+
+Programa principal para executar simulador básico (sem pipeline).
+
+    def main():
+        Função principal que:
+        - Parseia argumentos da linha de comando
+        - Cria instância do processador
+        - Carrega programa (.asm ou .bin)
+        - Executa programa (normal ou passo-a-passo)
+        - Mostra resultados finais
+
+        Argumentos suportados:
+        - arquivo: arquivo assembly ou binário
+        - -d, --debug: modo debug
+        - -s, --step: execução passo a passo
+        - -v, --verbose: saída detalhada
+
+=====================================
+MAIN_PIPELINE.PY
+=====================================
+
+Main Pipeline:
+==============
+
+Programa principal para executar simulador com pipeline.
+
+    def imprimir_uso():
+        Imprime instruções de uso do simulador pipeline.
+        Mostra argumentos e opções disponíveis.
+
+    def main():
+        Função principal que:
+        - Parseia argumentos manualmente
+        - Cria processador pipeline
+        - Carrega programa
+        - Executa com pipeline
+        - Gera arquivo de saída com estado completo
+
+        Argumentos suportados:
+        - arquivo: arquivo assembly ou binário
+        - -d, --debug: modo debug
+        - -o, --output: arquivo de saída
+        - -h, --help: ajuda
+
+=====================================
+TEST.PY
+=====================================
+
+Testes:
+=======
+
+Suite de testes para validar funcionamento do simulador.
+
+    def teste_soma():
+        Testa operações aritméticas básicas.
+        Executa: addi x1, zero, 10; addi x2, zero, 20; add x3, x1, x2
+        Verifica se resultado é 30.
+
+    def teste_branches():
+        Testa instruções de branch condicional.
+        Verifica se branch é tomado corretamente quando condição é verdadeira.
+
+    def teste_loads_stores():
+        Testa operações de memória.
+        Executa store seguido de load, verifica integridade dos dados.
+
+    def teste_assembler():
+        Testa funcionalidade do assembler.
+        Verifica se código assembly é convertido corretamente para binário.
+
+    def main():
+        Executa todos os testes sequencialmente.
+        Retorna 0 se todos passaram, 1 se algum falhou.
+
+EXEMPLO DE USO COMPLETO:
+=======================
+
+# Executar arquivo assembly básico
+python main.py examples/soma.asm -d
+
+# Executar com pipeline
+python main_pipeline.py examples/soma.asm -d -o resultado.out
+
+# Executar testes
+python test.py
+
+# Estrutura de um programa assembly
+addi x1, zero, 10     # Carrega 10 em x1
+addi x2, zero, 20     # Carrega 20 em x2  
+add x3, x1, x2        # Soma x1 + x2 = x3
+sw x3, 0(x0)          # Salva resultado na memória
